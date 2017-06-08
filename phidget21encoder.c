@@ -2,7 +2,7 @@
  *  phidget21encoder.c
  *
  *  Created by Léa Strobino.
- *  Copyright 2015 hepia. All rights reserved.
+ *  Copyright 2016 hepia. All rights reserved.
  *
  */
 
@@ -20,6 +20,7 @@ static mach_timebase_info_data_t timebase;
 #include <time.h>
 #endif
 
+#define VERSION 101
 #define PHIDGET_SAMPLING_PERIOD 8 /* 8 ms = 125 Hz */
 
 typedef struct {
@@ -27,7 +28,7 @@ typedef struct {
   CPhidget_DeviceID id;
   uint8_t encoderCount;
   uint32_t n;
-  uint32_t k;
+  uint32_t i;
 #ifdef __APPLE__
   uint64_t t0;
 #else
@@ -35,6 +36,7 @@ typedef struct {
 #endif
   int32_t *data;
   uint8_t *firstSample;
+  uint8_t *index;
   pthread_mutex_t mutex;
 } PhidgetEncoderHandle;
 
@@ -45,34 +47,42 @@ inline void nargchk(int nlhs, int required_nlhs, int nrhs, int required_nrhs) {
   if (nrhs > required_nrhs) mexErrMsgTxt("Too many input arguments.");
 }
 
+int32_t phidget21encoder_indexHandler(CPhidgetEncoderHandle handle, void *p, int32_t index, int32_t indexPosition) {
+  PhidgetEncoderHandle *ptr = p;
+  pthread_mutex_lock(&ptr->mutex);
+  ptr->index[index] = 1;
+  pthread_mutex_unlock(&ptr->mutex);
+  return 0;
+}
+
 int32_t phidget21encoder_positionChangeHandler(CPhidgetEncoderHandle handle, void *p, int32_t index, int32_t relativeTime, int32_t relativePosition) {
   
   PhidgetEncoderHandle *ptr = p;
   
   pthread_mutex_lock(&ptr->mutex);
   
-  if (ptr->k < ptr->n) {
+  if (ptr->i < ptr->n) {
     
     /* store data: index+1, relative time (ms or µs) and relative position */
-    ptr->data[ptr->k] = index+1;
-    if (ptr->id == PHIDID_ENCODER_HS_4ENCODER_4INPUT) ptr->data[ptr->k+1] = relativeTime;
-    else ptr->data[ptr->k+1] = 1024*relativeTime;
-    ptr->data[ptr->k+2] = relativePosition;
+    ptr->data[ptr->i] = index+1;
+    if (ptr->id == PHIDID_ENCODER_HS_4ENCODER_4INPUT) ptr->data[ptr->i+1] = relativeTime;
+    else ptr->data[ptr->i+1] = 1024*relativeTime;
+    ptr->data[ptr->i+2] = relativePosition;
     
     /* if this is the first sample, get the absolute time */
     if (ptr->firstSample[index]) {
 #ifdef __APPLE__
       uint64_t t1 = mach_absolute_time();
-      ptr->data[ptr->k+1] = round((double)(t1-ptr->t0)*(double)timebase.numer/((double)timebase.denom*1000));
+      ptr->data[ptr->i+1] = round((double)(t1-ptr->t0)*(double)timebase.numer/((double)timebase.denom*1000));
 #else
       struct timespec t1;
       clock_gettime(CLOCK_REALTIME,&t1);
-      ptr->data[ptr->k+1] = round((double)(t1.tv_sec-ptr->t0.tv_sec)*1000000+(double)(t1.tv_nsec-ptr->t0.tv_nsec)/1000);
+      ptr->data[ptr->i+1] = round((double)(t1.tv_sec-ptr->t0.tv_sec)*1000000+(double)(t1.tv_nsec-ptr->t0.tv_nsec)/1000);
 #endif
       ptr->firstSample[index] = 0;
     }
     
-    ptr->k += 3;
+    ptr->i += 3;
     
   } else {
     
@@ -102,8 +112,6 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[]) {
     
     nargchk(nlhs,1,nrhs,2);
     
-    int32_t serialNumber = mxGetScalar(prhs[1]);
-    
     /* set the pointer */
     PhidgetEncoderHandle *ptr = mxMalloc(sizeof(PhidgetEncoderHandle));
     mexMakeMemoryPersistent(ptr);
@@ -119,30 +127,34 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[]) {
     
     /* create and open the Phidget */
     CPhidgetEncoder_create(&ptr->handle);
-    CPhidget_open((CPhidgetHandle)ptr->handle,serialNumber);
+    if (mxIsChar(prhs[1])) {
+      char *label = mxArrayToString(prhs[1]);
+      CPhidget_openLabel((CPhidgetHandle)ptr->handle,label);
+      mxFree(label);
+    } else {
+      int32_t serialNumber = mxGetScalar(prhs[1]);
+      CPhidget_open((CPhidgetHandle)ptr->handle,serialNumber);
+    }
     
-    if (CPhidget_waitForAttachment((CPhidgetHandle)ptr->handle,1000)) {
+    if (CPhidget_waitForAttachment((CPhidgetHandle)ptr->handle,100)) {
       closePhidget(ptr);
       mexErrMsgIdAndTxt("phidget21encoder:NoDeviceAttached","No device attached.");
     }
     
-    /* check device class and ID */
-    CPhidget_DeviceClass deviceClass;
-    CPhidget_getDeviceClass((CPhidgetHandle)ptr->handle,&deviceClass);
-    if (deviceClass != PHIDCLASS_ENCODER) {
-      closePhidget(ptr);
-      mexErrMsgIdAndTxt("phidget21encoder:DeviceClassMismatch","Wrong device class. Expected class is 'PHIDCLASS_ENCODER'.");
-    }
+    /* check device ID */
     CPhidget_getDeviceID((CPhidgetHandle)ptr->handle,&ptr->id);
     
     /* enable all encoder inputs */
     CPhidgetEncoder_getEncoderCount(ptr->handle,(int32_t*)&ptr->encoderCount);
-    uint8_t k;
-    for (k=0; k<ptr->encoderCount; k++) {
-      CPhidgetEncoder_setEnabled(ptr->handle,k,1);
+    uint8_t i;
+    for (i=0; i<ptr->encoderCount; i++) {
+      CPhidgetEncoder_setEnabled(ptr->handle,i,1);
     }
     ptr->firstSample = mxCalloc(ptr->encoderCount,sizeof(uint8_t));
+    ptr->index = mxCalloc(ptr->encoderCount,sizeof(uint8_t));
     mexMakeMemoryPersistent(ptr->firstSample);
+    mexMakeMemoryPersistent(ptr->index);
+    CPhidgetEncoder_set_OnIndex_Handler(ptr->handle,phidget21encoder_indexHandler,ptr);
     
     /* lock the function */
     mexLock();
@@ -159,12 +171,14 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[]) {
       nargchk(nlhs,0,nrhs,2);
       
       /* close the Phidget */
+      CPhidgetEncoder_set_OnIndex_Handler(ptr->handle,NULL,NULL);
       mxFree(ptr->firstSample);
+      mxFree(ptr->index);
       closePhidget(ptr);
       
     } else if (strcmp(f,"getInfo") == 0) {
       
-      nargchk(nlhs,5,nrhs,2);
+      nargchk(nlhs,6,nrhs,2);
       
       /* get the device name */
       const char *deviceName;
@@ -181,14 +195,19 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[]) {
       uint32_t *deviceVersion = mxGetData(plhs[2]);
       CPhidget_getDeviceVersion((CPhidgetHandle)ptr->handle,(int32_t*)deviceVersion);
       
+      /* get the class version */
+      plhs[3] = mxCreateNumericMatrix(1,1,mxUINT32_CLASS,mxREAL);
+      uint32_t *classVersion = mxGetData(plhs[3]);
+      *classVersion = VERSION;
+      
       /* get the number of encoder inputs */
-      plhs[3] = mxCreateNumericMatrix(1,1,mxUINT8_CLASS,mxREAL);
-      uint8_t *encoderCount = mxGetData(plhs[3]);
+      plhs[4] = mxCreateNumericMatrix(1,1,mxUINT8_CLASS,mxREAL);
+      uint8_t *encoderCount = mxGetData(plhs[4]);
       *encoderCount = ptr->encoderCount;
       
       /* get the number of digital inputs */
-      plhs[4] = mxCreateNumericMatrix(1,1,mxUINT8_CLASS,mxREAL);
-      uint8_t *inputCount = mxGetData(plhs[4]);
+      plhs[5] = mxCreateNumericMatrix(1,1,mxUINT8_CLASS,mxREAL);
+      uint8_t *inputCount = mxGetData(plhs[5]);
       CPhidgetEncoder_getInputCount(ptr->handle,(int32_t*)inputCount);
       
     } else if (strcmp(f,"setPosition") == 0) {
@@ -214,14 +233,22 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[]) {
       
     } else if (strcmp(f,"getIndexPosition") == 0) {
       
-      nargchk(nlhs,1,nrhs,3);
+      nargchk(nlhs,2,nrhs,3);
       
       uint8_t index = mxGetScalar(prhs[2]);
       
       /* get the specified encoder index position */
       plhs[0] = mxCreateNumericMatrix(1,1,mxINT32_CLASS,mxREAL);
       int32_t *position = mxGetData(plhs[0]);
-      CPhidgetEncoder_getIndexPosition(ptr->handle,index,position);
+      if (CPhidgetEncoder_getIndexPosition(ptr->handle,index,position) != EPHIDGET_OUTOFBOUNDS) {
+        
+        /* read and clear unseen flag */
+        pthread_mutex_lock(&ptr->mutex);
+        plhs[1] = mxCreateLogicalScalar(ptr->index[index]);
+        ptr->index[index] = 0;
+        pthread_mutex_unlock(&ptr->mutex);
+        
+      } else plhs[1] = mxCreateLogicalScalar(0);
       
     } else if (strcmp(f,"getInputState") == 0) {
       
@@ -248,15 +275,15 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[]) {
       mxFree(ptr->data);
       ptr->data = mxCalloc(ptr->n,sizeof(int32_t));
       mexMakeMemoryPersistent(ptr->data);
-      ptr->k = 0;
+      ptr->i = 0;
       
       /* get initial positions */
-      uint8_t k;
-      for (k=0; k<ptr->encoderCount; k++) {
-        ptr->data[ptr->k++] = k+1;
-        ptr->data[ptr->k++] = 0;
-        CPhidgetEncoder_getPosition(ptr->handle,k,&ptr->data[ptr->k++]);
-        ptr->firstSample[k] = 1;
+      uint8_t i;
+      for (i=0; i<ptr->encoderCount; i++) {
+        ptr->data[ptr->i++] = i+1;
+        ptr->data[ptr->i++] = 0;
+        CPhidgetEncoder_getPosition(ptr->handle,i,&ptr->data[ptr->i++]);
+        ptr->firstSample[i] = 1;
       }
       
       /* get initial time */
@@ -278,7 +305,7 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[]) {
       
       uint8_t index = mxGetScalar(prhs[2]);
       
-      uint32_t n = ptr->n/(3*ptr->encoderCount), i = 0, k;
+      uint32_t n = ptr->n/(3*ptr->encoderCount), i = 0, j;
       int32_t prevTime = 0, prevPosition = 0;
       
       /* allocate memory */
@@ -289,22 +316,22 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[]) {
       
       pthread_mutex_lock(&ptr->mutex);
       
-      for (k=0; ((k < ptr->n) && (i < n) && ptr->data[k]); k+=3) {
+      for (j=0; ((j < ptr->n) && (i < n) && ptr->data[j]); j+=3) {
         
         /* get the specified encoder data */
-        if (ptr->data[k] == index+1) {
+        if (ptr->data[j] == index+1) {
           
-          if ((i == 1) && (ptr->data[k+1] == 0)) {
+          if ((i == 1) && (ptr->data[j+1] == 0)) {
             
             /* skip second sample if relativeTime = 0 */
-            prevPosition += ptr->data[k+2];
+            prevPosition += ptr->data[j+2];
             
           } else {
             
             /* copy selected encoder data into MATLAB workspace */
-            time_us[i] = prevTime + ptr->data[k+1];
+            time_us[i] = prevTime + ptr->data[j+1];
             prevTime = time_us[i];
-            position[i] = prevPosition + ptr->data[k+2];
+            position[i] = prevPosition + ptr->data[j+2];
             prevPosition = position[i];
             i++;
             

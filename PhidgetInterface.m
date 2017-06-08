@@ -2,7 +2,7 @@
 %  PhidgetInterface.m
 %
 %  Created by Léa Strobino.
-%  Copyright 2015 hepia. All rights reserved.
+%  Copyright 2016 hepia. All rights reserved.
 %
 
 classdef PhidgetInterface < matlab.mixin.SetGet
@@ -11,6 +11,7 @@ classdef PhidgetInterface < matlab.mixin.SetGet
     IDN
     DeviceName
     DeviceVersion
+    ClassVersion
     AnalogInputCount
     DigitalInputCount
     DigitalOutputCount
@@ -33,19 +34,21 @@ classdef PhidgetInterface < matlab.mixin.SetGet
   methods
     
     function this = PhidgetInterface(IDN)
-      if nargin && ~isempty(IDN)
-        IDN = sscanf(IDN,'%d');
-      else
+      if ~nargin || isempty(IDN)
         IDN = -1;
       end
       try
         this.ptr = phidget21interface('open',IDN);
       catch e
+        s = '';
+        if ischar(IDN)
+          s = [' "' IDN '"'];
+        end
         e = addCause(MException('PhidgetInterface:CommunicationError',...
-          'Unable to open the Phidget.'),e);
+          'Unable to open the Phidget%s.',s),e);
         throw(e);
       end
-      [this.DeviceName,IDN,this.DeviceVersion,...
+      [this.DeviceName,IDN,this.DeviceVersion,this.ClassVersion,...
         this.AnalogInputCount,this.DigitalInputCount,this.DigitalOutputCount,...
         dataRateMin,dataRateMax] = phidget21interface('getInfo',this.ptr);
       this.IDN = sprintf('%d',IDN);
@@ -73,9 +76,9 @@ classdef PhidgetInterface < matlab.mixin.SetGet
     
     function a = getAnalogInput(this,index)
       a = zeros(1,length(index));
-      for k = 1:length(index)
-        v = phidget21interface('getSensorRawValue',this.ptr,index(k)-1);
-        a(k) = double(v)/4095;
+      for i = 1:length(index)
+        v = phidget21interface('getSensorRawValue',this.ptr,index(i)-1);
+        a(i) = double(v)/4095;
       end
       if strcmp(this.AnalogReference,'internal')
         a = 5*a;
@@ -106,15 +109,15 @@ classdef PhidgetInterface < matlab.mixin.SetGet
     
     function d = getDigitalInput(this,index)
       d = false(1,length(index));
-      for k = 1:length(index)
-        d(k) = phidget21interface('getInputState',this.ptr,index(k)-1);
+      for i = 1:length(index)
+        d(i) = phidget21interface('getInputState',this.ptr,index(i)-1);
       end
     end
     
     function setDigitalOutput(this,index,state)
       state = logical(state);
-      for k = 1:length(index)
-        phidget21interface('setOutputState',this.ptr,index(k)-1,state(k));
+      for i = 1:length(index)
+        phidget21interface('setOutputState',this.ptr,index(i)-1,state(i));
       end
     end
     
@@ -124,13 +127,17 @@ classdef PhidgetInterface < matlab.mixin.SetGet
     
     function asyncTimerFcn(this,~,~)
       stop(this.async.timer);
-      for k = this.async.index
-        a = phidget21interface('getCapturedData',this.ptr,k-1);
+      for i = this.async.index
+        a = phidget21interface('getCapturedData',this.ptr,i-1);
         a = double(a)/1000;
         if strcmp(this.AnalogReference,'internal')
           a = 5*a;
         end
-        this.async.callbackFcn(k,this.async.t,a);
+        try
+          this.async.callbackFcn(i,this.async.t,a);
+        catch e
+          warning(e.identifier,e.message);
+        end
       end
     end
     

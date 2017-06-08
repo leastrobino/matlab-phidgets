@@ -2,7 +2,7 @@
 %  PhidgetEncoder.m
 %
 %  Created by Léa Strobino.
-%  Copyright 2015 hepia. All rights reserved.
+%  Copyright 2016 hepia. All rights reserved.
 %
 
 classdef PhidgetEncoder < handle
@@ -11,6 +11,7 @@ classdef PhidgetEncoder < handle
     IDN
     DeviceName
     DeviceVersion
+    ClassVersion
     EncoderCount
     DigitalInputCount
   end
@@ -28,19 +29,21 @@ classdef PhidgetEncoder < handle
   methods
     
     function this = PhidgetEncoder(IDN)
-      if nargin && ~isempty(IDN)
-        IDN = sscanf(IDN,'%d');
-      else
+      if ~nargin || isempty(IDN)
         IDN = -1;
       end
       try
         this.ptr = phidget21encoder('open',IDN);
       catch e
+        s = '';
+        if ischar(IDN)
+          s = [' "' IDN '"'];
+        end
         e = addCause(MException('PhidgetEncoder:CommunicationError',...
-          'Unable to open the Phidget.'),e);
+          'Unable to open the Phidget%s.',s),e);
         throw(e);
       end
-      [this.DeviceName,IDN,this.DeviceVersion,...
+      [this.DeviceName,IDN,this.DeviceVersion,this.ClassVersion,...
         this.EncoderCount,this.DigitalInputCount] = phidget21encoder('getInfo',this.ptr);
       this.IDN = sprintf('%d',IDN);
       this.cpr = 360*ones(1,this.EncoderCount);
@@ -66,18 +69,18 @@ classdef PhidgetEncoder < handle
       if numel(position) ~= numel(index)
         position = position(1)*ones(1,numel(index));
       end
-      for k = 1:length(index)
-        a = 4*this.cpr(index(k))*position(k)/(2*pi);
-        phidget21encoder('setPosition',this.ptr,index(k)-1,int32(a));
+      for i = 1:length(index)
+        a = 4*this.cpr(index(i))*position(i)/(2*pi);
+        phidget21encoder('setPosition',this.ptr,index(i)-1,int32(a));
       end
     end
     
     function p = getPosition(this,index)
       p = zeros(1,length(index));
-      for k = 1:length(index)
-        p(k) = double(phidget21encoder('getPosition',this.ptr,index(k)-1));
+      for i = 1:length(index)
+        p(i) = phidget21encoder('getPosition',this.ptr,index(i)-1);
       end
-      p = 2*pi*p./(4*this.cpr(index));
+      p = 2*pi*double(p)./(4*this.cpr(index));
     end
     
     function getPositionAsync(this,index,duration,callbackFcn)
@@ -95,18 +98,22 @@ classdef PhidgetEncoder < handle
       end
     end
     
-    function p = getIndexPosition(this,index)
+    function [p,unseen] = getIndexPosition(this,index)
       p = zeros(1,length(index));
-      for k = 1:length(index)
-        p(k) = double(phidget21encoder('getIndexPosition',this.ptr,index(k)-1));
+      unseen = false(1,length(index));
+      for i = 1:length(index)
+        [p(i),unseen(i)] = phidget21encoder('getIndexPosition',this.ptr,index(i)-1);
+        if p(i) == 2^31-1
+          p(1) = NaN;
+        end
       end
-      p = 2*pi*p./(4*this.cpr(index));
+      p = 2*pi*double(p)./(4*this.cpr(index));
     end
     
     function d = getDigitalInput(this,index)
       d = false(1,length(index));
-      for k = 1:length(index)
-        d(k) = phidget21encoder('getInputState',this.ptr,index(k)-1);
+      for i = 1:length(index)
+        d(i) = phidget21encoder('getInputState',this.ptr,index(i)-1);
       end
     end
     
@@ -116,11 +123,15 @@ classdef PhidgetEncoder < handle
     
     function asyncTimerFcn(this,~,~)
       stop(this.async.timer);
-      for k = this.async.index
-        [t,p] = phidget21encoder('getCapturedData',this.ptr,k-1);
+      for i = this.async.index
+        [t,p] = phidget21encoder('getCapturedData',this.ptr,i-1);
         t = 1E-6*double(t(t <= 1E6*this.async.duration));
-        p = 2*pi*double(p(1:length(t)))/(4*this.cpr(k));
-        this.async.callbackFcn(k,t,p);
+        p = 2*pi*double(p(1:length(t)))/(4*this.cpr(i));
+        try
+          this.async.callbackFcn(i,t,p);
+        catch e
+          warning(e.identifier,e.message);
+        end
       end
     end
     
