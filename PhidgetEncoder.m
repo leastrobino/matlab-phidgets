@@ -104,7 +104,7 @@ classdef PhidgetEncoder < handle
       for i = 1:length(index)
         [p(i),unseen(i)] = phidget21encoder('getIndexPosition',this.ptr,index(i)-1);
         if p(i) == 2^31-1
-          p(1) = NaN;
+          p(i) = NaN;
         end
       end
       p = 2*pi*double(p)./(4*this.cpr(index));
