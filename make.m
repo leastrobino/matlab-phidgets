@@ -33,9 +33,9 @@ warning('off','MATLAB:DELETE:FileNotFound');
 
 if any(strcmpi(varargin,'clean'))
   m = mexext('all');
-  for k = 1:length(m)
-    delete(['*.' m(k).ext]);
-    delete(['private/*.' m(k).ext]);
+  for i = 1:length(m)
+    delete(['*.' m(i).ext]);
+    delete(['private/*.' m(i).ext]);
   end
   delete *.p
   delete private/*.p
